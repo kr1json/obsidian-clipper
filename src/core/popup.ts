@@ -525,6 +525,20 @@ function setupEventListeners(tabId: number) {
 		readerModeButton.addEventListener('click', () => toggleReaderMode(tabId));
 	}
 
+	const selectContentButton = document.getElementById('select-content-btn');
+	if (selectContentButton) {
+		selectContentButton.addEventListener('click', async () => {
+			try {
+				await browser.runtime.sendMessage({ action: 'startContentSelection', tabId });
+				// Close popup so user can click the content on the page
+				setTimeout(() => window.close(), 50);
+			} catch (error) {
+				console.error('Error starting content selection:', error);
+				showError('failedToInitialize');
+			}
+		});
+	}
+
 	const selectFrameButton = document.getElementById('select-frame-btn');
 	if (selectFrameButton) {
 		selectFrameButton.addEventListener('click', async () => {

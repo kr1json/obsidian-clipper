@@ -28,6 +28,7 @@ declare global {
 
 	// Frame selection state (top-level frames only)
 	let selectedFrameIndex: number | null = null;
+	let selectedElementHtml: string | null = null;
 	const frameSelectOverlayId = 'obsidian-clipper-frame-select-overlay';
 
 	function removeContainer(container: HTMLElement) {
@@ -304,6 +305,42 @@ declare global {
 	}
 
 	async function onFrameSelectClick(e: MouseEvent) {
+		// If we're in content selection mode, pick an element (possibly inside same-origin iframe)
+		if (overlayHudEl && overlayHudEl.textContent?.includes('Select content')) {
+			e.preventDefault();
+			e.stopPropagation();
+
+			const { el, inFrame } = getElementAtPointAuto(e.clientX, e.clientY);
+			if (!el) {
+				// If pointer is in a cross-origin iframe, we can't inspect inside it.
+				if (inFrame) {
+					const rawSrc = inFrame.getAttribute('src') || '';
+					cleanupFrameSelectOverlay();
+					if (rawSrc && rawSrc !== 'about:blank') {
+						try {
+							const absUrl = new URL(rawSrc, document.baseURI).href;
+							await browser.runtime.sendMessage({ action: 'frameSelectionCompleted', tabId: (window as any).__obsidianClipperTabId, mode: 'open-url', url: absUrl }).catch(() => {});
+							return;
+						} catch {
+							// fallthrough
+						}
+					}
+					await browser.runtime.sendMessage({ action: 'frameSelectionCompleted', tabId: (window as any).__obsidianClipperTabId, mode: 'error', error: 'Cannot select inside cross-origin iframe.' }).catch(() => {});
+					return;
+				}
+
+				// Nothing found
+				return;
+			}
+
+			const promoted = promoteElement(el);
+			selectedElementHtml = (promoted as HTMLElement)?.outerHTML || '';
+			selectedFrameIndex = null;
+			cleanupFrameSelectOverlay();
+			await browser.runtime.sendMessage({ action: 'frameSelectionCompleted', tabId: (window as any).__obsidianClipperTabId, mode: 'same-origin' }).catch(() => {});
+			return;
+		}
+
 		if (!currentHoverIframe) return;
 		e.preventDefault();
 		e.stopPropagation();
@@ -342,14 +379,74 @@ declare global {
 		await browser.runtime.sendMessage({ action: 'frameSelectionCompleted', tabId: (window as any).__obsidianClipperTabId, mode: 'error', error: 'Selected iframe is not accessible and has no usable src.' }).catch(() => {});
 	}
 
+	function promoteElement(el: Element | null): Element | null {
+		if (!el) return null;
+		const goodTags = new Set(['ARTICLE', 'MAIN', 'SECTION', 'DIV']);
+		const badTags = new Set(['HTML', 'BODY', 'IFRAME', 'SCRIPT', 'STYLE']);
+
+		let cur: Element | null = el;
+		for (let i = 0; i < 8 && cur; i++) {
+			if (badTags.has(cur.tagName)) break;
+			const id = (cur as HTMLElement).id || '';
+			const cls = (cur as HTMLElement).className || '';
+			const hit = /post|content|article|se-main|viewer|wrap|container/i.test(id + ' ' + cls);
+			if (goodTags.has(cur.tagName) && hit) return cur;
+			cur = cur.parentElement;
+		}
+
+		// Fallback: climb to nearest reasonable block
+		cur = el;
+		for (let i = 0; i < 8 && cur; i++) {
+			if (badTags.has(cur.tagName)) break;
+			if (goodTags.has(cur.tagName)) return cur;
+			cur = cur.parentElement;
+		}
+		return el;
+	}
+
+	function getElementAtPointAuto(x: number, y: number): { el: Element | null; inFrame: HTMLIFrameElement | null } {
+		const iframe = getIframeAtPointByRects(x, y);
+		if (!iframe) {
+			return { el: document.elementFromPoint(x, y), inFrame: null };
+		}
+
+		// Try same-origin access
+		try {
+			const doc = iframe.contentDocument;
+			if (!doc) return { el: null, inFrame: iframe };
+			const rect = iframe.getBoundingClientRect();
+			const innerX = x - rect.left;
+			const innerY = y - rect.top;
+			return { el: doc.elementFromPoint(innerX, innerY), inFrame: iframe };
+		} catch {
+			return { el: null, inFrame: iframe };
+		}
+	}
+
 	function startFrameSelectionMode(senderTabId?: number) {
 		// Store tab id for callbacks back to background
 		(window as any).__obsidianClipperTabId = senderTabId;
 		ensureFrameSelectOverlay();
+		overlayHighlightEl && (overlayHighlightEl.style.pointerEvents = 'none');
 		setTimeout(() => {
-			// Give the overlay a tick to mount, then show initial frame count.
 			try {
 				setFrameDebug(`debug: frames=${listFrames().length} (move mouse to detect)`);
+			} catch {
+				// ignore
+			}
+		}, 0);
+	}
+
+	function startContentSelectionMode(senderTabId?: number) {
+		(window as any).__obsidianClipperTabId = senderTabId;
+		ensureFrameSelectOverlay();
+		if (overlayHudEl) {
+			overlayHudEl.querySelector('#obsidian-clipper-frame-debug')?.remove();
+			overlayHudEl.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">Select content</div><div>Hover the content area to highlight it, then click to clip just that part. Press <b>Esc</b> to cancel.</div><div id="obsidian-clipper-frame-debug" style="margin-top:8px; opacity:0.85; font-size:12px;">(debug: initializing…)</div>';
+		}
+		setTimeout(() => {
+			try {
+				setFrameDebug(`debug: frames=${listFrames().length} (auto element pick)`);
 			} catch {
 				// ignore
 			}
@@ -425,6 +522,12 @@ declare global {
 			return true;
 		}
 
+		if (request.action === "startContentSelection") {
+			startContentSelectionMode(sender?.tab?.id);
+			sendResponse({ success: true });
+			return true;
+		}
+
 		if (request.action === "toggle-iframe") {
 			toggleIframe().then(() => {
 				sendResponse({ success: true });
@@ -492,6 +595,14 @@ declare global {
 			}
 
 			try {
+				// If an element was selected (possibly inside an iframe), treat it as selectedHtml.
+				if (selectedElementHtml) {
+					const response = buildPageContentResponse(document, document.URL, selectedElementHtml);
+					sendResponse(response);
+					selectedElementHtml = null; // one-shot
+					return true;
+				}
+
 				// If a frame was selected and is same-origin, extract from that frame's document.
 				if (selectedFrameIndex !== null) {
 					const frameIndex = selectedFrameIndex;

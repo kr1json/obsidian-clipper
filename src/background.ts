@@ -347,6 +347,23 @@ browser.runtime.onMessage.addListener((request: unknown, sender: browser.Runtime
 			return true;
 		}
 
+		if (typedRequest.action === "startContentSelection") {
+			const tabId = (typedRequest as any).tabId as number | undefined;
+			if (!tabId) {
+				sendResponse({ success: false, error: 'Missing tabId' });
+				return true;
+			}
+
+			ensureContentScriptLoadedInBackground(tabId)
+				.then(() => browser.tabs.sendMessage(tabId, { action: 'startContentSelection' }))
+				.then(() => sendResponse({ success: true }))
+				.catch((error) => {
+					console.error('Error starting content selection:', error);
+					sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) });
+				});
+			return true;
+		}
+
 		if (typedRequest.action === "frameSelectionCompleted") {
 			// Fired by content script after user chooses/cancels
 			const payload = typedRequest as any;

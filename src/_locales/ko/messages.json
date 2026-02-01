@@ -523,6 +523,9 @@
 	"openEmbedded": {
 		"message": "페이지에서 열기"
 	},
+	"selectContent": {
+		"message": "본문 선택"
+	},
 	"selectFrame": {
 		"message": "프레임 선택"
 	},

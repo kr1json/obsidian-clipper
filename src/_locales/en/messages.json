@@ -523,6 +523,9 @@
 	"openEmbedded": {
 		"message": "Open in page"
 	},
+	"selectContent": {
+		"message": "Select content"
+	},
 	"selectFrame": {
 		"message": "Select frame"
 	},
