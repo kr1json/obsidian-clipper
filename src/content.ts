@@ -31,6 +31,9 @@ declare global {
 	let contentScopeFrameIndex: number | null = null;
 	let selectedElementHtml: string | null = null;
 	let selectionFlow: 'none' | 'frameThenContent' = 'none';
+	let contentCandidates: Element[] = [];
+	let contentCandidateIndex = 0;
+	let contentLockedElement: Element | null = null;
 	const frameSelectOverlayId = 'obsidian-clipper-frame-select-overlay';
 
 	function removeContainer(container: HTMLElement) {
@@ -184,6 +187,11 @@ declare global {
 		if (existing) existing.remove();
 		overlayEl = null;
 		currentHoverIframe = null;
+		contentCandidates = [];
+		contentCandidateIndex = 0;
+		contentLockedElement = null;
+		selectionFlow = 'none';
+		contentScopeFrameIndex = null;
 		document.removeEventListener('keydown', onFrameSelectKeyDown, true);
 		document.removeEventListener('mousemove', onFrameSelectMouseMove, true);
 		document.removeEventListener('click', onFrameSelectClick, true);
@@ -254,6 +262,20 @@ declare global {
 			e.stopPropagation();
 			cleanupFrameSelectOverlay();
 			browser.runtime.sendMessage({ action: 'frameSelectionCompleted', tabId: (window as any).__obsidianClipperTabId, mode: 'cancel' }).catch(() => {});
+			return;
+		}
+
+		// When content candidates are locked, allow cycling without mouse precision.
+		if (selectionMode === 'content' && contentCandidates.length > 0) {
+			if (e.key === 'Tab') {
+				e.preventDefault();
+				e.stopPropagation();
+				const dir = e.shiftKey ? -1 : 1;
+				contentCandidateIndex = (contentCandidateIndex + dir + contentCandidates.length) % contentCandidates.length;
+				contentLockedElement = contentCandidates[contentCandidateIndex] || null;
+				setFrameDebug(`debug: candidate ${contentCandidateIndex + 1}/${contentCandidates.length}`);
+				return;
+			}
 		}
 	}
 
@@ -290,6 +312,19 @@ declare global {
 		if (!overlayHighlightEl) return;
 
 		if (selectionMode === 'content') {
+			// If we already computed a locked candidate, keep highlighting it.
+			const locked = contentLockedElement || contentCandidates[contentCandidateIndex] || null;
+			if (locked) {
+				const rect = (locked as HTMLElement).getBoundingClientRect();
+				setFrameDebug(`debug: locked candidate ${contentCandidateIndex + 1}/${Math.max(1, contentCandidates.length)} rect=${Math.round(rect.width)}x${Math.round(rect.height)} (Tab to cycle)`);
+				overlayHighlightEl.style.display = 'block';
+				overlayHighlightEl.style.left = `${Math.max(0, rect.left)}px`;
+				overlayHighlightEl.style.top = `${Math.max(0, rect.top)}px`;
+				overlayHighlightEl.style.width = `${Math.max(0, rect.width)}px`;
+				overlayHighlightEl.style.height = `${Math.max(0, rect.height)}px`;
+				return;
+			}
+
 			const { el, inFrame } = getElementAtPointAuto(e.clientX, e.clientY);
 			const promoted = promoteElement(el);
 			if (!promoted) {
@@ -366,7 +401,8 @@ declare global {
 				return;
 			}
 
-			const promoted = promoteElement(el);
+			const locked = contentLockedElement || contentCandidates[contentCandidateIndex] || null;
+			const promoted = promoteElement(locked || el);
 			selectedElementHtml = (promoted as HTMLElement)?.outerHTML || '';
 			selectedFrameIndex = null;
 			cleanupFrameSelectOverlay();
@@ -398,8 +434,21 @@ declare global {
 				contentScopeFrameIndex = index;
 				selectionMode = 'content';
 				selectionFlow = 'none';
+
+				// Pre-compute a stable content candidate so mouse movement doesn't cause jitter.
+				try {
+					const iframeDoc = iframe.contentDocument;
+					if (iframeDoc) {
+						contentCandidates = computeBestContentCandidates(iframeDoc);
+						contentCandidateIndex = 0;
+						contentLockedElement = contentCandidates[0] || null;
+					}
+				} catch {
+					// ignore
+				}
+
 				setContentHud();
-				setFrameDebug(`debug: scoped to frame index=${index} (now pick content)`);
+				setFrameDebug(`debug: scoped to frame index=${index} candidates=${contentCandidates.length} (Tab to cycle)`);
 				return;
 			}
 
@@ -472,6 +521,34 @@ declare global {
 			cur = cur.parentElement;
 		}
 		return el;
+	}
+
+	function computeBestContentCandidates(doc: Document): Element[] {
+		const candidates: { el: Element; score: number }[] = [];
+		const blocks = Array.from(doc.querySelectorAll('article, main, section, div'));
+		for (const el of blocks) {
+			const rect = (el as HTMLElement).getBoundingClientRect?.();
+			if (!rect || rect.width <= 200 || rect.height <= 120) continue;
+			const s = `${(el as HTMLElement).id || ''} ${(el as HTMLElement).className || ''}`.toLowerCase();
+			if (/gnb|menu|nav|sidebar|aside|comment|reply|footer|header|toolbar|floating|recommend|related|banner|ad/.test(s)) continue;
+			const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+			if (text.length < 400) continue;
+			const links = el.querySelectorAll('a');
+			const linkTextLen = Array.from(links).reduce((acc, a) => acc + ((a.textContent || '').length), 0);
+			const linkDensity = text.length ? linkTextLen / text.length : 0;
+
+			let score = 0;
+			score += Math.min(5000, text.length);
+			score += Math.min(2000, rect.width * rect.height / 5);
+			score -= linkDensity * 2000;
+			if (/articlecontentbox|se-main-container|postviewarea|viewer|content_area|cafeviewer/.test(s)) score += 4000;
+			if (/se-component-content/.test(s)) score -= 800; // often a sub-block
+
+			candidates.push({ el, score });
+		}
+
+		candidates.sort((a, b) => b.score - a.score);
+		return candidates.slice(0, 8).map(c => c.el);
 	}
 
 	function getElementAtPointAuto(x: number, y: number): { el: Element | null; inFrame: HTMLIFrameElement | null } {
