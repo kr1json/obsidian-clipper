@@ -523,6 +523,9 @@
 	"openEmbedded": {
 		"message": "페이지에서 열기"
 	},
+	"selectFrame": {
+		"message": "프레임 선택"
+	},
 	"openSidePanel": {
 		"message": "사이드 패널 열기"
 	},

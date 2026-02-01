@@ -26,6 +26,10 @@ declare global {
 	const iframeId = 'obsidian-clipper-iframe';
 	const containerId = 'obsidian-clipper-container';
 
+	// Frame selection state (top-level frames only)
+	let selectedFrameIndex: number | null = null;
+	const frameSelectOverlayId = 'obsidian-clipper-frame-select-overlay';
+
 	function removeContainer(container: HTMLElement) {
 		container.classList.add('is-closing');
 		container.addEventListener('animationend', () => {
@@ -172,9 +176,205 @@ declare global {
 		metaTags: { name?: string | null; property?: string | null; content: string | null }[];
 	}
 
+	function cleanupFrameSelectOverlay() {
+		const existing = document.getElementById(frameSelectOverlayId);
+		if (existing) existing.remove();
+		document.removeEventListener('keydown', onFrameSelectKeyDown, true);
+		document.removeEventListener('mousemove', onFrameSelectMouseMove, true);
+		document.removeEventListener('click', onFrameSelectClick, true);
+	}
+
+	let currentHoverIframe: HTMLIFrameElement | null = null;
+	let overlayHighlightEl: HTMLDivElement | null = null;
+	let overlayHudEl: HTMLDivElement | null = null;
+
+	function ensureFrameSelectOverlay() {
+		cleanupFrameSelectOverlay();
+
+		const overlay = document.createElement('div');
+		overlay.id = frameSelectOverlayId;
+		overlay.style.position = 'fixed';
+		overlay.style.inset = '0';
+		overlay.style.zIndex = '2147483647';
+		overlay.style.pointerEvents = 'none';
+
+		const dim = document.createElement('div');
+		dim.style.position = 'absolute';
+		dim.style.inset = '0';
+		dim.style.background = 'rgba(0,0,0,0.35)';
+		dim.style.backdropFilter = 'blur(1px)';
+		overlay.appendChild(dim);
+
+		const highlight = document.createElement('div');
+		highlight.style.position = 'absolute';
+		highlight.style.border = '2px solid rgba(120, 200, 255, 0.95)';
+		highlight.style.background = 'rgba(120, 200, 255, 0.12)';
+		highlight.style.borderRadius = '6px';
+		highlight.style.boxShadow = '0 0 0 9999px rgba(0,0,0,0.0)';
+		highlight.style.display = 'none';
+		overlay.appendChild(highlight);
+		overlayHighlightEl = highlight;
+
+		const hud = document.createElement('div');
+		hud.style.position = 'absolute';
+		hud.style.top = '12px';
+		hud.style.left = '12px';
+		hud.style.padding = '10px 12px';
+		hud.style.borderRadius = '10px';
+		hud.style.background = 'rgba(20,20,20,0.9)';
+		hud.style.color = 'white';
+		hud.style.fontSize = '13px';
+		hud.style.fontFamily = 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+		hud.style.maxWidth = '340px';
+		hud.style.pointerEvents = 'none';
+		hud.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">Select a frame</div><div>Hover an iframe to highlight it, then click to clip it. Press <b>Esc</b> to cancel.</div>';
+		overlay.appendChild(hud);
+		overlayHudEl = hud;
+
+		document.documentElement.appendChild(overlay);
+
+		document.addEventListener('keydown', onFrameSelectKeyDown, true);
+		document.addEventListener('mousemove', onFrameSelectMouseMove, true);
+		document.addEventListener('click', onFrameSelectClick, true);
+	}
+
+	function onFrameSelectKeyDown(e: KeyboardEvent) {
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			e.stopPropagation();
+			cleanupFrameSelectOverlay();
+			browser.runtime.sendMessage({ action: 'frameSelectionCompleted', tabId: (window as any).__obsidianClipperTabId, mode: 'cancel' }).catch(() => {});
+		}
+	}
+
+	function onFrameSelectMouseMove(e: MouseEvent) {
+		const els = document.elementsFromPoint(e.clientX, e.clientY);
+		const iframe = els.find((el): el is HTMLIFrameElement => el instanceof HTMLIFrameElement) || null;
+		currentHoverIframe = iframe;
+		if (!overlayHighlightEl) return;
+		if (!iframe) {
+			overlayHighlightEl.style.display = 'none';
+			return;
+		}
+		const rect = iframe.getBoundingClientRect();
+		overlayHighlightEl.style.display = 'block';
+		overlayHighlightEl.style.left = `${Math.max(0, rect.left)}px`;
+		overlayHighlightEl.style.top = `${Math.max(0, rect.top)}px`;
+		overlayHighlightEl.style.width = `${Math.max(0, rect.width)}px`;
+		overlayHighlightEl.style.height = `${Math.max(0, rect.height)}px`;
+	}
+
+	async function onFrameSelectClick(e: MouseEvent) {
+		if (!currentHoverIframe) return;
+		e.preventDefault();
+		e.stopPropagation();
+
+		const iframe = currentHoverIframe;
+		cleanupFrameSelectOverlay();
+
+		const iframes = Array.from(document.querySelectorAll('iframe'));
+		const index = iframes.indexOf(iframe);
+		const rawSrc = iframe.getAttribute('src') || '';
+
+		// Same-origin? If we can access contentDocument, keep it in-place.
+		let canAccess = false;
+		try {
+			canAccess = !!iframe.contentDocument;
+		} catch {
+			canAccess = false;
+		}
+
+		if (canAccess && index >= 0) {
+			selectedFrameIndex = index;
+			await browser.runtime.sendMessage({ action: 'frameSelectionCompleted', tabId: (window as any).__obsidianClipperTabId, mode: 'same-origin' }).catch(() => {});
+			return;
+		}
+
+		if (rawSrc && rawSrc !== 'about:blank') {
+			try {
+				const absUrl = new URL(rawSrc, document.baseURI).href;
+				await browser.runtime.sendMessage({ action: 'frameSelectionCompleted', tabId: (window as any).__obsidianClipperTabId, mode: 'open-url', url: absUrl }).catch(() => {});
+				return;
+			} catch (err) {
+				// fallthrough
+			}
+		}
+
+		await browser.runtime.sendMessage({ action: 'frameSelectionCompleted', tabId: (window as any).__obsidianClipperTabId, mode: 'error', error: 'Selected iframe is not accessible and has no usable src.' }).catch(() => {});
+	}
+
+	function startFrameSelectionMode(senderTabId?: number) {
+		// Store tab id for callbacks back to background
+		(window as any).__obsidianClipperTabId = senderTabId;
+		ensureFrameSelectOverlay();
+	}
+
+	function buildPageContentResponse(docToParse: Document, url: string, selectedHtml: string): ContentResponse {
+		const extractedContent: { [key: string]: string } = {};
+		const defuddled = new Defuddle(docToParse, { url }).parse();
+
+		const parser = new DOMParser();
+		const doc = parser.parseFromString(docToParse.documentElement.outerHTML, 'text/html');
+		doc.querySelectorAll('script, style').forEach(el => el.remove());
+		doc.querySelectorAll('*').forEach(el => el.removeAttribute('style'));
+		doc.querySelectorAll('[src], [href]').forEach(element => {
+			['src', 'href', 'srcset'].forEach(attr => {
+				const value = element.getAttribute(attr);
+				if (!value) return;
+				if (attr === 'srcset') {
+					const newSrcset = value.split(',').map(src => {
+						const [u, size] = src.trim().split(' ');
+						try {
+							const absoluteUrl = new URL(u, url).href;
+							return `${absoluteUrl}${size ? ' ' + size : ''}`;
+						} catch {
+							return src;
+						}
+					}).join(', ');
+					element.setAttribute(attr, newSrcset);
+				} else if (!value.startsWith('http') && !value.startsWith('data:') && !value.startsWith('#') && !value.startsWith('//')) {
+					try {
+						const absoluteUrl = new URL(value, url).href;
+						element.setAttribute(attr, absoluteUrl);
+					} catch {
+						// ignore
+					}
+				}
+			});
+		});
+
+		const cleanedHtml = doc.documentElement.outerHTML;
+
+		return {
+			author: defuddled.author,
+			content: defuddled.content,
+			description: defuddled.description,
+			domain: getDomain(url),
+			extractedContent,
+			favicon: defuddled.favicon,
+			fullHtml: cleanedHtml,
+			highlights: highlighter.getHighlights(),
+			image: defuddled.image,
+			parseTime: defuddled.parseTime,
+			published: defuddled.published,
+			schemaOrgData: defuddled.schemaOrgData,
+			selectedHtml,
+			site: defuddled.site,
+			title: defuddled.title,
+			wordCount: defuddled.wordCount,
+			metaTags: defuddled.metaTags || []
+		};
+	}
+
 	browser.runtime.onMessage.addListener((request: any, sender, sendResponse) => {
 		if (request.action === "ping") {
 			sendResponse({});
+			return true;
+		}
+
+		if (request.action === "startFrameSelection") {
+			startFrameSelectionMode(sender?.tab?.id);
+			sendResponse({ success: true });
 			return true;
 		}
 
@@ -235,7 +435,7 @@ declare global {
 		if (request.action === "getPageContent") {
 			let selectedHtml = '';
 			const selection = window.getSelection();
-			
+
 			if (selection && selection.rangeCount > 0) {
 				const range = selection.getRangeAt(0);
 				const clonedSelection = range.cloneContents();
@@ -244,73 +444,55 @@ declare global {
 				selectedHtml = div.innerHTML;
 			}
 
-			const extractedContent: { [key: string]: string } = {};
-
-			// Process with Defuddle first while we have access to the document
-			const defuddled = new Defuddle(document, { url: document.URL }).parse();
-
-			// Create a new DOMParser
-			const parser = new DOMParser();
-			// Parse the document's HTML
-			const doc = parser.parseFromString(document.documentElement.outerHTML, 'text/html');
-
-			// Remove all script and style elements
-			doc.querySelectorAll('script, style').forEach(el => el.remove());
-
-			// Remove style attributes from all elements
-			doc.querySelectorAll('*').forEach(el => el.removeAttribute('style'));
-
-			// Convert all relative URLs to absolute
-			doc.querySelectorAll('[src], [href]').forEach(element => {
-				['src', 'href', 'srcset'].forEach(attr => {
-					const value = element.getAttribute(attr);
-					if (!value) return;
-					
-					if (attr === 'srcset') {
-						const newSrcset = value.split(',').map(src => {
-							const [url, size] = src.trim().split(' ');
-							try {
-								const absoluteUrl = new URL(url, document.baseURI).href;
-								return `${absoluteUrl}${size ? ' ' + size : ''}`;
-							} catch (e) {
-								return src;
-							}
-						}).join(', ');
-						element.setAttribute(attr, newSrcset);
-					} else if (!value.startsWith('http') && !value.startsWith('data:') && !value.startsWith('#') && !value.startsWith('//')) {
+			try {
+				// If a frame was selected and is same-origin, extract from that frame's document.
+				if (selectedFrameIndex !== null) {
+					const frameIndex = selectedFrameIndex;
+					const iframe = Array.from(document.querySelectorAll('iframe'))[frameIndex] as HTMLIFrameElement | undefined;
+					if (iframe) {
+						let frameDoc: Document | null = null;
 						try {
-							const absoluteUrl = new URL(value, document.baseURI).href;
-							element.setAttribute(attr, absoluteUrl);
-						} catch (e) {
-							console.warn(`Failed to process ${attr} URL:`, value);
+							frameDoc = iframe.contentDocument;
+						} catch {
+							frameDoc = null;
+						}
+
+						if (frameDoc) {
+							const frameUrl = frameDoc.URL || (iframe.getAttribute('src') ? new URL(iframe.getAttribute('src') as string, document.baseURI).href : document.URL);
+							const response = buildPageContentResponse(frameDoc, frameUrl, '');
+							sendResponse(response);
+							selectedFrameIndex = null; // one-shot
+							return true;
 						}
 					}
+					// If we can't access it (should be rare because selection checks), fall back to page.
+					selectedFrameIndex = null;
+				}
+
+				const response = buildPageContentResponse(document, document.URL, selectedHtml);
+				sendResponse(response);
+			} catch (err) {
+				console.error('Error building page content response:', err);
+				sendResponse({
+					content: '',
+					selectedHtml: '',
+					extractedContent: {},
+					schemaOrgData: null,
+					fullHtml: '',
+					highlights: [],
+					title: '',
+					description: '',
+					domain: getDomain(document.URL),
+					favicon: '',
+					image: '',
+					parseTime: 0,
+					published: '',
+					author: '',
+					site: '',
+					wordCount: 0,
+					metaTags: []
 				});
-			});
-
-			// Get the modified HTML without scripts, styles, and style attributes
-			const cleanedHtml = doc.documentElement.outerHTML;
-
-			const response: ContentResponse = {
-				author: defuddled.author,
-				content: defuddled.content,
-				description: defuddled.description,
-				domain: getDomain(document.URL),
-				extractedContent: extractedContent,
-				favicon: defuddled.favicon,
-				fullHtml: cleanedHtml,
-				highlights: highlighter.getHighlights(),
-				image: defuddled.image,
-				parseTime: defuddled.parseTime,
-				published: defuddled.published,
-				schemaOrgData: defuddled.schemaOrgData,
-				selectedHtml: selectedHtml,
-				site: defuddled.site,
-				title: defuddled.title,
-				wordCount: defuddled.wordCount,
-				metaTags: defuddled.metaTags || []
-			};
-			sendResponse(response);
+			}
 		} else if (request.action === "extractContent") {
 			const content = extractContentBySelector(request.selector, request.attribute, request.extractHtml);
 			sendResponse({ content: content });

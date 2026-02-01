@@ -17,6 +17,18 @@ Install the extension by downloading it from the official directory for your bro
 
 Documentation is available on the [Obsidian Help site](https://help.obsidian.md/web-clipper), which covers how to use [highlighting](https://help.obsidian.md/web-clipper/highlight), [templates](https://help.obsidian.md/web-clipper/templates), [variables](https://help.obsidian.md/web-clipper/variables), [filters](https://help.obsidian.md/web-clipper/filters), and more.
 
+### Select frame (fork feature)
+
+If the content you want to clip is inside an embedded iframe:
+
+1. Click the extension icon to open the clipper.
+2. Click **Select frame**.
+3. Hover the iframe on the page (it will highlight), then click it.
+   - Press **Esc** to cancel.
+4. The clipper will attempt to clip the frame:
+   - Same-origin iframes are clipped directly.
+   - Cross-origin iframes attempt to open the iframe `src` in a new tab and clip that page.
+
 ## Contribute
 
 ### Translations

@@ -523,6 +523,9 @@
 	"openEmbedded": {
 		"message": "Open in page"
 	},
+	"selectFrame": {
+		"message": "Select frame"
+	},
 	"openSidePanel": {
 		"message": "Open side panel"
 	},

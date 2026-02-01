@@ -524,6 +524,20 @@ function setupEventListeners(tabId: number) {
 	if (readerModeButton) {
 		readerModeButton.addEventListener('click', () => toggleReaderMode(tabId));
 	}
+
+	const selectFrameButton = document.getElementById('select-frame-btn');
+	if (selectFrameButton) {
+		selectFrameButton.addEventListener('click', async () => {
+			try {
+				await browser.runtime.sendMessage({ action: 'startFrameSelection', tabId });
+				// Close popup so user can click the frame on the page
+				setTimeout(() => window.close(), 50);
+			} catch (error) {
+				console.error('Error starting frame selection:', error);
+				showError('failedToInitialize');
+			}
+		});
+	}
 }
 
 async function initializeUI() {

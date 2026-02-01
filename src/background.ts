@@ -330,6 +330,84 @@ browser.runtime.onMessage.addListener((request: unknown, sender: browser.Runtime
 			}
 		}
 
+		if (typedRequest.action === "startFrameSelection") {
+			const tabId = (typedRequest as any).tabId as number | undefined;
+			if (!tabId) {
+				sendResponse({ success: false, error: 'Missing tabId' });
+				return true;
+			}
+
+			ensureContentScriptLoadedInBackground(tabId)
+				.then(() => browser.tabs.sendMessage(tabId, { action: 'startFrameSelection' }))
+				.then(() => sendResponse({ success: true }))
+				.catch((error) => {
+					console.error('Error starting frame selection:', error);
+					sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) });
+				});
+			return true;
+		}
+
+		if (typedRequest.action === "frameSelectionCompleted") {
+			// Fired by content script after user chooses/cancels
+			const payload = typedRequest as any;
+			const tabId = payload.tabId as number | undefined;
+			const mode = payload.mode as 'same-origin' | 'open-url' | 'error' | 'cancel' | undefined;
+			const url = payload.url as string | undefined;
+			const errorMessage = payload.error as string | undefined;
+
+			const triggerQuickClip = async () => {
+				try {
+					await browser.action.openPopup();
+					setTimeout(() => {
+						browser.runtime.sendMessage({ action: 'triggerQuickClip' })
+							.catch((e) => console.error('Failed to send quick clip message:', e));
+					}, 500);
+				} catch (e) {
+					console.error('Failed to open popup for quick clip:', e);
+				}
+			};
+
+			(async () => {
+				try {
+					if (mode === 'same-origin') {
+						// Selection applies to current tab; just quick clip
+						if (tabId) {
+							await browser.tabs.update(tabId, { active: true });
+						}
+						await triggerQuickClip();
+						return;
+					}
+
+					if (mode === 'open-url' && url) {
+						const newTab = await browser.tabs.create({ url, active: true });
+						if (newTab.id) {
+							// Wait for load complete before clipping
+							const listener = (updatedTabId: number, info: browser.Tabs.OnUpdatedChangeInfoType) => {
+								if (updatedTabId === newTab.id && info.status === 'complete') {
+									browser.tabs.onUpdated.removeListener(listener);
+									ensureContentScriptLoadedInBackground(updatedTabId)
+										.then(() => triggerQuickClip())
+										.catch((e) => console.error('Failed to quick clip new tab:', e));
+								}
+							};
+							browser.tabs.onUpdated.addListener(listener);
+						}
+						return;
+					}
+
+					if (mode === 'error') {
+						console.warn('Frame selection error:', errorMessage);
+						return;
+					}
+				} catch (e) {
+					console.error('Error handling frameSelectionCompleted:', e);
+				}
+			})();
+
+			sendResponse({ success: true });
+			return true;
+		}
+
 		if (typedRequest.action === "openObsidianUrl") {
 			const url = (typedRequest as any).url;
 			if (url) {
