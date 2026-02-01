@@ -26,9 +26,11 @@ declare global {
 	const iframeId = 'obsidian-clipper-iframe';
 	const containerId = 'obsidian-clipper-container';
 
-	// Frame selection state (top-level frames only)
+	// Selection state
 	let selectedFrameIndex: number | null = null;
+	let contentScopeFrameIndex: number | null = null;
 	let selectedElementHtml: string | null = null;
+	let selectionFlow: 'none' | 'frameThenContent' = 'none';
 	const frameSelectOverlayId = 'obsidian-clipper-frame-select-overlay';
 
 	function removeContainer(container: HTMLElement) {
@@ -377,7 +379,6 @@ declare global {
 		e.stopPropagation();
 
 		const iframe = currentHoverIframe;
-		cleanupFrameSelectOverlay();
 
 		const iframes = Array.from(document.querySelectorAll('iframe'));
 		const index = iframes.indexOf(iframe);
@@ -392,7 +393,18 @@ declare global {
 		}
 
 		if (canAccess && index >= 0) {
+			if (selectionFlow === 'frameThenContent') {
+				// Constrain subsequent content selection to this frame
+				contentScopeFrameIndex = index;
+				selectionMode = 'content';
+				selectionFlow = 'none';
+				setContentHud();
+				setFrameDebug(`debug: scoped to frame index=${index} (now pick content)`);
+				return;
+			}
+
 			selectedFrameIndex = index;
+			cleanupFrameSelectOverlay();
 			await browser.runtime.sendMessage({ action: 'frameSelectionCompleted', tabId: (window as any).__obsidianClipperTabId, mode: 'same-origin' }).catch(() => {});
 			return;
 		}
@@ -400,6 +412,7 @@ declare global {
 		if (rawSrc && rawSrc !== 'about:blank') {
 			try {
 				const absUrl = new URL(rawSrc, document.baseURI).href;
+				cleanupFrameSelectOverlay();
 				await browser.runtime.sendMessage({ action: 'frameSelectionCompleted', tabId: (window as any).__obsidianClipperTabId, mode: 'open-url', url: absUrl }).catch(() => {});
 				return;
 			} catch (err) {
@@ -407,6 +420,7 @@ declare global {
 			}
 		}
 
+		cleanupFrameSelectOverlay();
 		await browser.runtime.sendMessage({ action: 'frameSelectionCompleted', tabId: (window as any).__obsidianClipperTabId, mode: 'error', error: 'Selected iframe is not accessible and has no usable src.' }).catch(() => {});
 	}
 
@@ -461,6 +475,23 @@ declare global {
 	}
 
 	function getElementAtPointAuto(x: number, y: number): { el: Element | null; inFrame: HTMLIFrameElement | null } {
+		// If we have a scope frame, ONLY pick inside that frame.
+		if (contentScopeFrameIndex !== null) {
+			const iframe = Array.from(document.querySelectorAll('iframe'))[contentScopeFrameIndex] as HTMLIFrameElement | undefined;
+			if (iframe) {
+				try {
+					const doc = iframe.contentDocument;
+					if (!doc) return { el: null, inFrame: iframe };
+					const rect = iframe.getBoundingClientRect();
+					const innerX = x - rect.left;
+					const innerY = y - rect.top;
+					return { el: doc.elementFromPoint(innerX, innerY), inFrame: iframe };
+				} catch {
+					return { el: null, inFrame: iframe };
+				}
+			}
+		}
+
 		const iframe = getIframeAtPointByRects(x, y);
 		if (!iframe) {
 			return { el: document.elementFromPoint(x, y), inFrame: null };
@@ -494,17 +525,41 @@ declare global {
 		}, 0);
 	}
 
+	function setContentHud() {
+		if (!overlayHudEl) return;
+		overlayHudEl.querySelector('#obsidian-clipper-frame-debug')?.remove();
+		overlayHudEl.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">Select content</div><div>Hover the content area to highlight it, then click to clip just that part. Press <b>Esc</b> to cancel.</div><div id="obsidian-clipper-frame-debug" style="margin-top:8px; opacity:0.85; font-size:12px;">(debug: initializing…)</div>';
+	}
+
 	function startContentSelectionMode(senderTabId?: number) {
 		selectionMode = 'content';
+		selectionFlow = 'none';
+		contentScopeFrameIndex = null;
+		(window as any).__obsidianClipperTabId = senderTabId;
+		ensureFrameSelectOverlay();
+		setContentHud();
+		setTimeout(() => {
+			try {
+				setFrameDebug(`debug: frames=${listFrames().length} (auto element pick)`);
+			} catch {
+				// ignore
+			}
+		}, 0);
+	}
+
+	function startFrameThenContentSelectionMode(senderTabId?: number) {
+		selectionMode = 'frame';
+		selectionFlow = 'frameThenContent';
+		contentScopeFrameIndex = null;
 		(window as any).__obsidianClipperTabId = senderTabId;
 		ensureFrameSelectOverlay();
 		if (overlayHudEl) {
 			overlayHudEl.querySelector('#obsidian-clipper-frame-debug')?.remove();
-			overlayHudEl.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">Select content</div><div>Hover the content area to highlight it, then click to clip just that part. Press <b>Esc</b> to cancel.</div><div id="obsidian-clipper-frame-debug" style="margin-top:8px; opacity:0.85; font-size:12px;">(debug: initializing…)</div>';
+			overlayHudEl.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">Select frame → content</div><div>First click the iframe that contains the post. Then you will pick the content inside it.</div><div id="obsidian-clipper-frame-debug" style="margin-top:8px; opacity:0.85; font-size:12px;">(debug: initializing…)</div>';
 		}
 		setTimeout(() => {
 			try {
-				setFrameDebug(`debug: frames=${listFrames().length} (auto element pick)`);
+				setFrameDebug(`debug: frames=${listFrames().length} (pick frame first)`);
 			} catch {
 				// ignore
 			}
@@ -582,6 +637,12 @@ declare global {
 
 		if (request.action === "startContentSelection") {
 			startContentSelectionMode(sender?.tab?.id);
+			sendResponse({ success: true });
+			return true;
+		}
+
+		if (request.action === "startFrameThenContentSelection") {
+			startFrameThenContentSelectionMode(sender?.tab?.id);
 			sendResponse({ success: true });
 			return true;
 		}

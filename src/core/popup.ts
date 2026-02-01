@@ -525,6 +525,19 @@ function setupEventListeners(tabId: number) {
 		readerModeButton.addEventListener('click', () => toggleReaderMode(tabId));
 	}
 
+	const selectFrameThenContentButton = document.getElementById('select-frame-then-content-btn');
+	if (selectFrameThenContentButton) {
+		selectFrameThenContentButton.addEventListener('click', async () => {
+			try {
+				await browser.runtime.sendMessage({ action: 'startFrameThenContentSelection', tabId });
+				setTimeout(() => window.close(), 50);
+			} catch (error) {
+				console.error('Error starting frame then content selection:', error);
+				showError('failedToInitialize');
+			}
+		});
+	}
+
 	const selectContentButton = document.getElementById('select-content-btn');
 	if (selectContentButton) {
 		selectContentButton.addEventListener('click', async () => {
