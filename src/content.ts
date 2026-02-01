@@ -281,11 +281,42 @@ declare global {
 		if (el) el.textContent = text;
 	}
 
+	let selectionMode: 'frame' | 'content' = 'frame';
+
 	function onFrameSelectMouseMove(e: MouseEvent) {
 		const frames = listFrames();
+		if (!overlayHighlightEl) return;
+
+		if (selectionMode === 'content') {
+			const { el, inFrame } = getElementAtPointAuto(e.clientX, e.clientY);
+			const promoted = promoteElement(el);
+			if (!promoted) {
+				overlayHighlightEl.style.display = 'none';
+				if (inFrame) {
+					const rawSrc = inFrame.getAttribute('src') || '';
+					setFrameDebug(`debug: content frames=${frames.length} @ (${e.clientX},${e.clientY}) → in cross-origin iframe src=${rawSrc.slice(0, 80)}`);
+				} else {
+					setFrameDebug(`debug: content frames=${frames.length} @ (${e.clientX},${e.clientY}) → none`);
+				}
+				return;
+			}
+
+			const rect = (promoted as HTMLElement).getBoundingClientRect();
+			const id = (promoted as HTMLElement).id ? `#${(promoted as HTMLElement).id}` : '';
+			const cls = (promoted as HTMLElement).className ? `.${String((promoted as HTMLElement).className).split(' ').slice(0,2).join('.')}` : '';
+			setFrameDebug(`debug: content frames=${frames.length} @ (${e.clientX},${e.clientY}) → ${promoted.tagName}${id}${cls} rect=${Math.round(rect.width)}x${Math.round(rect.height)}`);
+
+			overlayHighlightEl.style.display = 'block';
+			overlayHighlightEl.style.left = `${Math.max(0, rect.left)}px`;
+			overlayHighlightEl.style.top = `${Math.max(0, rect.top)}px`;
+			overlayHighlightEl.style.width = `${Math.max(0, rect.width)}px`;
+			overlayHighlightEl.style.height = `${Math.max(0, rect.height)}px`;
+			return;
+		}
+
+		// frame mode (default)
 		const iframe = getIframeAtPointByRects(e.clientX, e.clientY);
 		currentHoverIframe = iframe;
-		if (!overlayHighlightEl) return;
 		if (!iframe) {
 			overlayHighlightEl.style.display = 'none';
 			setFrameDebug(`debug: frames=${frames.length} @ (${e.clientX},${e.clientY}) → none`);
@@ -306,7 +337,7 @@ declare global {
 
 	async function onFrameSelectClick(e: MouseEvent) {
 		// If we're in content selection mode, pick an element (possibly inside same-origin iframe)
-		if (overlayHudEl && overlayHudEl.textContent?.includes('Select content')) {
+		if (selectionMode === 'content') {
 			e.preventDefault();
 			e.stopPropagation();
 
@@ -424,6 +455,7 @@ declare global {
 	}
 
 	function startFrameSelectionMode(senderTabId?: number) {
+		selectionMode = 'frame';
 		// Store tab id for callbacks back to background
 		(window as any).__obsidianClipperTabId = senderTabId;
 		ensureFrameSelectOverlay();
@@ -438,6 +470,7 @@ declare global {
 	}
 
 	function startContentSelectionMode(senderTabId?: number) {
+		selectionMode = 'content';
 		(window as any).__obsidianClipperTabId = senderTabId;
 		ensureFrameSelectOverlay();
 		if (overlayHudEl) {
