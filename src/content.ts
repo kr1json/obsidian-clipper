@@ -254,19 +254,24 @@ declare global {
 		}
 	}
 
-	function getUnderlyingIframeAtPoint(x: number, y: number): HTMLIFrameElement | null {
-		// Our overlay captures the mouse events; temporarily hide it to detect the real underlying element.
-		if (overlayEl) overlayEl.style.display = 'none';
-		try {
-			const els = document.elementsFromPoint(x, y);
-			return els.find((el): el is HTMLIFrameElement => el instanceof HTMLIFrameElement) || null;
-		} finally {
-			if (overlayEl) overlayEl.style.display = 'block';
+	function getIframeAtPointByRects(x: number, y: number): HTMLIFrameElement | null {
+		// More robust than elementsFromPoint: some sites use overlays / event retargeting.
+		// Pick the smallest iframe that contains the point.
+		let best: { el: HTMLIFrameElement; area: number } | null = null;
+		for (const iframe of Array.from(document.querySelectorAll('iframe'))) {
+			const rect = iframe.getBoundingClientRect();
+			if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+				const area = Math.max(0, rect.width) * Math.max(0, rect.height);
+				if (!best || area < best.area) {
+					best = { el: iframe, area };
+				}
+			}
 		}
+		return best?.el || null;
 	}
 
 	function onFrameSelectMouseMove(e: MouseEvent) {
-		const iframe = getUnderlyingIframeAtPoint(e.clientX, e.clientY);
+		const iframe = getIframeAtPointByRects(e.clientX, e.clientY);
 		currentHoverIframe = iframe;
 		if (!overlayHighlightEl) return;
 		if (!iframe) {
