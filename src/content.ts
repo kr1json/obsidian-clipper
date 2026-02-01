@@ -231,9 +231,9 @@ declare global {
 		hud.style.color = 'white';
 		hud.style.fontSize = '13px';
 		hud.style.fontFamily = 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
-		hud.style.maxWidth = '340px';
+		hud.style.maxWidth = '420px';
 		hud.style.pointerEvents = 'none';
-		hud.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">Select a frame</div><div>Hover an iframe to highlight it, then click to clip it. Press <b>Esc</b> to cancel.</div>';
+		hud.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">Select a frame</div><div>Hover an iframe to highlight it, then click to clip it. Press <b>Esc</b> to cancel.</div><div id="obsidian-clipper-frame-debug" style="margin-top:8px; opacity:0.85; font-size:12px;">(debug: initializing…)</div>';
 		overlay.appendChild(hud);
 		overlayHudEl = hud;
 
@@ -254,12 +254,17 @@ declare global {
 		}
 	}
 
+	function listFrames(): HTMLIFrameElement[] {
+		return Array.from(document.querySelectorAll('iframe')) as HTMLIFrameElement[];
+	}
+
 	function getIframeAtPointByRects(x: number, y: number): HTMLIFrameElement | null {
 		// More robust than elementsFromPoint: some sites use overlays / event retargeting.
 		// Pick the smallest iframe that contains the point.
 		let best: { el: HTMLIFrameElement; area: number } | null = null;
-		for (const iframe of Array.from(document.querySelectorAll('iframe'))) {
+		for (const iframe of listFrames()) {
 			const rect = iframe.getBoundingClientRect();
+			if (rect.width <= 0 || rect.height <= 0) continue;
 			if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
 				const area = Math.max(0, rect.width) * Math.max(0, rect.height);
 				if (!best || area < best.area) {
@@ -270,15 +275,27 @@ declare global {
 		return best?.el || null;
 	}
 
+	function setFrameDebug(text: string) {
+		const el = document.getElementById('obsidian-clipper-frame-debug');
+		if (el) el.textContent = text;
+	}
+
 	function onFrameSelectMouseMove(e: MouseEvent) {
+		const frames = listFrames();
 		const iframe = getIframeAtPointByRects(e.clientX, e.clientY);
 		currentHoverIframe = iframe;
 		if (!overlayHighlightEl) return;
 		if (!iframe) {
 			overlayHighlightEl.style.display = 'none';
+			setFrameDebug(`debug: frames=${frames.length} @ (${e.clientX},${e.clientY}) → none`);
 			return;
 		}
 		const rect = iframe.getBoundingClientRect();
+		const id = iframe.id ? `#${iframe.id}` : '';
+		const name = iframe.getAttribute('name') ? `[name=${iframe.getAttribute('name')}]` : '';
+		const src = iframe.getAttribute('src') || '';
+		setFrameDebug(`debug: frames=${frames.length} @ (${e.clientX},${e.clientY}) → iframe${id}${name} rect=${Math.round(rect.width)}x${Math.round(rect.height)} src=${src.slice(0, 80)}`);
+
 		overlayHighlightEl.style.display = 'block';
 		overlayHighlightEl.style.left = `${Math.max(0, rect.left)}px`;
 		overlayHighlightEl.style.top = `${Math.max(0, rect.top)}px`;
@@ -329,6 +346,14 @@ declare global {
 		// Store tab id for callbacks back to background
 		(window as any).__obsidianClipperTabId = senderTabId;
 		ensureFrameSelectOverlay();
+		setTimeout(() => {
+			// Give the overlay a tick to mount, then show initial frame count.
+			try {
+				setFrameDebug(`debug: frames=${listFrames().length} (move mouse to detect)`);
+			} catch {
+				// ignore
+			}
+		}, 0);
 	}
 
 	function buildPageContentResponse(docToParse: Document, url: string, selectedHtml: string): ContentResponse {
