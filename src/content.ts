@@ -415,13 +415,38 @@ declare global {
 		const goodTags = new Set(['ARTICLE', 'MAIN', 'SECTION', 'DIV']);
 		const badTags = new Set(['HTML', 'BODY', 'IFRAME', 'SCRIPT', 'STYLE']);
 
+		const sig = (node: Element) => {
+			const id = (node as HTMLElement).id || '';
+			const cls = (node as HTMLElement).className || '';
+			return `${id} ${cls}`.trim();
+		};
+
+		// Prefer known "main content" containers (esp. Naver editor/Cafe)
+		const strongHit = /ArticleContentBox|se-main-container|se_component_wrap|se-component|CafeViewer|content_area|postViewArea|post-area|entry-content|article_container|board-article|article-view|__viewer|viewer/i;
+		const weakHit = /post|content|article|se-main|viewer|wrap|container/i;
+		const avoid = /gnb|menu|nav|sidebar|aside|comment|reply|footer|header|toolbar|floating|recommend|related|banner|ad/i;
+
 		let cur: Element | null = el;
-		for (let i = 0; i < 8 && cur; i++) {
+		for (let i = 0; i < 10 && cur; i++) {
 			if (badTags.has(cur.tagName)) break;
-			const id = (cur as HTMLElement).id || '';
-			const cls = (cur as HTMLElement).className || '';
-			const hit = /post|content|article|se-main|viewer|wrap|container/i.test(id + ' ' + cls);
-			if (goodTags.has(cur.tagName) && hit) return cur;
+			const s = sig(cur);
+			if (avoid.test(s)) {
+				cur = cur.parentElement;
+				continue;
+			}
+			if (goodTags.has(cur.tagName) && strongHit.test(s)) return cur;
+			cur = cur.parentElement;
+		}
+
+		cur = el;
+		for (let i = 0; i < 10 && cur; i++) {
+			if (badTags.has(cur.tagName)) break;
+			const s = sig(cur);
+			if (avoid.test(s)) {
+				cur = cur.parentElement;
+				continue;
+			}
+			if (goodTags.has(cur.tagName) && weakHit.test(s)) return cur;
 			cur = cur.parentElement;
 		}
 
