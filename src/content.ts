@@ -179,12 +179,15 @@ declare global {
 	function cleanupFrameSelectOverlay() {
 		const existing = document.getElementById(frameSelectOverlayId);
 		if (existing) existing.remove();
+		overlayEl = null;
+		currentHoverIframe = null;
 		document.removeEventListener('keydown', onFrameSelectKeyDown, true);
 		document.removeEventListener('mousemove', onFrameSelectMouseMove, true);
 		document.removeEventListener('click', onFrameSelectClick, true);
 	}
 
 	let currentHoverIframe: HTMLIFrameElement | null = null;
+	let overlayEl: HTMLDivElement | null = null;
 	let overlayHighlightEl: HTMLDivElement | null = null;
 	let overlayHudEl: HTMLDivElement | null = null;
 
@@ -196,17 +199,20 @@ declare global {
 		overlay.style.position = 'fixed';
 		overlay.style.inset = '0';
 		overlay.style.zIndex = '2147483647';
-		overlay.style.pointerEvents = 'none';
+		// Capture mouse events even when the pointer is inside an iframe.
+		overlay.style.pointerEvents = 'auto';
 
 		const dim = document.createElement('div');
 		dim.style.position = 'absolute';
 		dim.style.inset = '0';
 		dim.style.background = 'rgba(0,0,0,0.35)';
 		dim.style.backdropFilter = 'blur(1px)';
+		dim.style.pointerEvents = 'auto';
 		overlay.appendChild(dim);
 
 		const highlight = document.createElement('div');
 		highlight.style.position = 'absolute';
+		highlight.style.pointerEvents = 'none';
 		highlight.style.border = '2px solid rgba(120, 200, 255, 0.95)';
 		highlight.style.background = 'rgba(120, 200, 255, 0.12)';
 		highlight.style.borderRadius = '6px';
@@ -231,6 +237,7 @@ declare global {
 		overlay.appendChild(hud);
 		overlayHudEl = hud;
 
+		overlayEl = overlay;
 		document.documentElement.appendChild(overlay);
 
 		document.addEventListener('keydown', onFrameSelectKeyDown, true);
@@ -247,9 +254,19 @@ declare global {
 		}
 	}
 
+	function getUnderlyingIframeAtPoint(x: number, y: number): HTMLIFrameElement | null {
+		// Our overlay captures the mouse events; temporarily hide it to detect the real underlying element.
+		if (overlayEl) overlayEl.style.display = 'none';
+		try {
+			const els = document.elementsFromPoint(x, y);
+			return els.find((el): el is HTMLIFrameElement => el instanceof HTMLIFrameElement) || null;
+		} finally {
+			if (overlayEl) overlayEl.style.display = 'block';
+		}
+	}
+
 	function onFrameSelectMouseMove(e: MouseEvent) {
-		const els = document.elementsFromPoint(e.clientX, e.clientY);
-		const iframe = els.find((el): el is HTMLIFrameElement => el instanceof HTMLIFrameElement) || null;
+		const iframe = getUnderlyingIframeAtPoint(e.clientX, e.clientY);
 		currentHoverIframe = iframe;
 		if (!overlayHighlightEl) return;
 		if (!iframe) {
